@@ -1,0 +1,273 @@
+import java.io.*;
+import java.nio.file.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+
+
+public class InventoryManagement {
+    private static final String PRODUCTS_FILE = "products.csv";
+    private static final String INVOICE_DIR = "invoices";
+    private static final Scanner SC = new Scanner(System.in);
+    private static final DateTimeFormatter DF = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+
+    public static void main(String[] args) {
+        try {
+            Files.createDirectories(Paths.get("."));
+            Files.createDirectories(Paths.get(INVOICE_DIR));
+            if (!Files.exists(Paths.get(PRODUCTS_FILE))) {
+                Files.createFile(Paths.get(PRODUCTS_FILE));
+            }
+        } catch (IOException e) {
+            System.err.println("Setup error: " + e.getMessage());
+            return;
+        }
+
+        System.out.println("=== Inventory Management ===");
+        while (true) {
+            System.out.println("\nMenu:");
+            System.out.println("1) Add product");
+            System.out.println("2) Update product");
+            System.out.println("3) Delete product");
+            System.out.println("4) List products");
+            System.out.println("5) Search product");
+            System.out.println("6) Create invoice (sell)");
+            System.out.println("7) Export products CSV");
+            System.out.println("8) Exit");
+            System.out.print("Choose: ");
+            String opt = SC.nextLine().trim();
+            try {
+                switch (opt) {
+                    case "1" -> addProduct();
+                    case "2" -> updateProduct();
+                    case "3" -> deleteProduct();
+                    case "4" -> listProducts();
+                    case "5" -> searchProduct();
+                    case "6" -> createInvoice();
+                    case "7" -> exportProducts();
+                    case "8" -> { System.out.println("Bye."); return; }
+                    default -> System.out.println("Invalid choice.");
+                }
+            } catch (Exception e) {
+                System.out.println("Error: " + e.getMessage());
+            }
+        }
+    }
+
+    // --- CRUD operations ---
+    private static void addProduct() throws IOException {
+        System.out.print("Product name: ");
+        String name = SC.nextLine().trim();
+        if (name.isEmpty()) { System.out.println("Name required."); return; }
+        System.out.print("Price (e.g., 99.99): ");
+        double price = Double.parseDouble(SC.nextLine());
+        System.out.print("Quantity (integer): ");
+        int qty = Integer.parseInt(SC.nextLine());
+        String id = generateProductId();
+        appendLine(PRODUCTS_FILE, String.format("%s,%s,%.2f,%d", id, escapeCsv(name), price, qty));
+        System.out.println("Product added with ID: " + id);
+    }
+
+    private static void updateProduct() throws IOException {
+        System.out.print("Enter product ID to update: ");
+        String id = SC.nextLine().trim();
+        List<Product> products = loadAllProducts();
+        boolean found = false;
+        for (Product p : products) {
+            if (p.id.equals(id)) {
+                found = true;
+                System.out.println("Found: " + p);
+                System.out.print("New name (enter to keep): ");
+                String name = SC.nextLine().trim(); if (!name.isEmpty()) p.name = name;
+                System.out.print("New price (enter to keep): ");
+                String pr = SC.nextLine().trim(); if (!pr.isEmpty()) p.price = Double.parseDouble(pr);
+
+
+System.out.print("New quantity (enter to keep): ");
+                String q = SC.nextLine().trim(); if (!q.isEmpty()) p.quantity = Integer.parseInt(q);
+                break;
+            }
+        }
+        if (!found) { System.out.println("Product not found."); return; }
+        saveAllProducts(products);
+        System.out.println("Product updated.");
+    }
+
+    private static void deleteProduct() throws IOException {
+        System.out.print("Enter product ID to delete: ");
+        String id = SC.nextLine().trim();
+        List<Product> products = loadAllProducts();
+        boolean removed = products.removeIf(p -> p.id.equals(id));
+        if (!removed) { System.out.println("Product not found."); return; }
+        saveAllProducts(products);
+        System.out.println("Product deleted.");
+    }
+
+    private static void listProducts() throws IOException {
+        List<Product> products = loadAllProducts();
+        if (products.isEmpty()) { System.out.println("No products."); return; }
+        System.out.println("ID\tName\tPrice\tQty\tLowStock?");
+        for (Product p : products) {
+            System.out.printf("%s\t%s\t%.2f\t%d\t%s\n", p.id, p.name, p.price, p.quantity, (p.quantity <= 5 ? "YES" : "NO"));
+        }
+    }
+
+    private static void searchProduct() throws IOException {
+        System.out.print("Search query (name): ");
+        String q = SC.nextLine().trim().toLowerCase();
+        List<Product> products = loadAllProducts();
+        boolean found = false;
+        for (Product p : products) {
+            if (p.name.toLowerCase().contains(q) || p.id.equalsIgnoreCase(q)) {
+                System.out.println(p);
+                found = true;
+            }
+        }
+        if (!found) System.out.println("No matching products.");
+    }
+
+    // --- Invoice / Billing ---
+    private static void createInvoice() throws IOException {
+        Map<String, Integer> cart = new LinkedHashMap<>();
+        while (true) {
+            System.out.print("Enter product ID to add to cart (or 'done'): ");
+            String id = SC.nextLine().trim();
+            if (id.equalsIgnoreCase("done")) break;
+            Product p = findProductById(id);
+            if (p == null) { System.out.println("Not found."); continue; }
+            System.out.print("Quantity: ");
+            int q = Integer.parseInt(SC.nextLine().trim());
+            if (q <= 0) { System.out.println("Invalid qty."); continue; }
+            if (q > p.quantity) { System.out.println("Not enough stock. Available: " + p.quantity); continue; }
+            cart.put(id, cart.getOrDefault(id, 0) + q);
+            System.out.println("Added.");
+        }
+        if (cart.isEmpty()) { System.out.println("Cart empty."); return; }
+        // Confirm and create invoice
+        double total = 0.0;
+        StringBuilder sb = new StringBuilder();
+        sb.append("Invoice - ").append(LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))).append("\n");
+        sb.append("--------------------------------------------------\n");
+        sb.append(String.format("%-10s %-20s %6s %6s %8s\n", "ProdID", "Name", "Qty", "Price", "Amount"));
+        for (Map.Entry<String,Integer> e : cart.entrySet()) {
+            Product p = findProductById(e.getKey());
+            int q = e.getValue();
+            double amt = p.price * q;
+            total += amt;
+            sb.append(String.format("%-10s %-20s %6d %6.2f %8.2f\n", p.id, p.name, q, p.price, amt));
+        }
+        sb.append("--------------------------------------------------\n");
+        sb.append(String.format("TOTAL: %.2f\n", total));
+        System.out.printf("Total amount: %.2f. Confirm sale? (yes/no): ", total);
+        String confirm = SC.nextLine().trim();
+        if (!confirm.equalsIgnoreCase("yes")) { System.out.println("Cancelled."); return; }
+
+
+// Update stock
+        List<Product> products = loadAllProducts();
+        for (Map.Entry<String,Integer> e : cart.entrySet()) {
+            for (Product p : products) {
+                if (p.id.equals(e.getKey())) {
+                    p.quantity -= e.getValue();
+                }
+            }
+        }
+        saveAllProducts(products);
+        // Save invoice
+        String invoiceId = "INV-" + LocalDateTime.now().format(DF);
+        Path invPath = Paths.get(INVOICE_DIR, invoiceId + ".txt");
+        Files.write(invPath, sb.toString().getBytes());
+        System.out.println("Invoice created: " + invPath.toString());
+        // Low-stock warnings
+        for (Product p : products) {
+            if (p.quantity <= 5) {
+                System.out.println("Low stock warning: " + p.id + " (" + p.name + ") qty=" + p.quantity);
+            }
+        }
+    }
+
+    private static void exportProducts() throws IOException {
+        // copy to exported_products_TIMESTAMP.csv
+        String out = "exported_products_" + LocalDateTime.now().format(DF) + ".csv";
+        Files.copy(Paths.get(PRODUCTS_FILE), Paths.get(out), StandardCopyOption.REPLACE_EXISTING);
+        System.out.println("Exported to " + out);
+    }
+
+    // --- Persistence helpers ---
+    private static Product findProductById(String id) throws IOException {
+        List<Product> products = loadAllProducts();
+        for (Product p : products) if (p.id.equals(id)) return p;
+        return null;
+    }
+
+    private static List<Product> loadAllProducts() throws IOException {
+        List<Product> list = new ArrayList<>();
+        try (BufferedReader br = Files.newBufferedReader(Paths.get(PRODUCTS_FILE))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] parts = parseCsvLine(line);
+                if (parts.length < 4) continue;
+                String id = parts[0];
+                String name = parts[1];
+                double price = Double.parseDouble(parts[2]);
+                int qty = Integer.parseInt(parts[3]);
+                list.add(new Product(id, name, price, qty));
+            }
+        }
+        return list;
+    }
+
+    private static void saveAllProducts(List<Product> products) throws IOException {
+        List<String> out = new ArrayList<>();
+        for (Product p : products) out.add(String.format("%s,%s,%.2f,%d", p.id, escapeCsv(p.name), p.price, p.quantity));
+        Files.write(Paths.get(PRODUCTS_FILE), out);
+    }
+
+    private static void appendLine(String file, String line) throws IOException {
+        try (BufferedWriter bw = Files.newBufferedWriter(Paths.get(file), StandardOpenOption.APPEND)) {
+            bw.write(line); bw.newLine();
+        }
+    }
+
+    private static String generateProductId() throws IOException {
+        // P + incremental timestamp
+        return "P" + (System.currentTimeMillis() % 10000000) + (int)(Math.random() * 900);
+    }
+
+    // --- Simple CSV helper ---
+    private static String escapeCsv(String s) {
+        if (s.contains(",")  s.contains("\"")  s.contains("\n")) {
+            return "\"" + s.replace("\"", "\"\"") + "\"";
+        }
+        return s;
+    }
+
+    private static String[] parseCsvLine(String line) {
+        List<String> cols = new ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        boolean inQuotes = false;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '"') {
+                if (inQuotes && i + 1 < line.length() && line.charAt(i + 1) == '"') {
+                    cur.append('"'); i++;
+                } else inQuotes = !inQuotes;
+            } else if (c == ',' && !inQuotes) {
+                cols.add(cur.toString());
+                cur.setLength(0);
+            } else cur.append(c);
+        }
+        cols.add(cur.toString());
+        return cols.toArray(new String[0]);
+    }
+
+
+private static class Product {
+        String id;
+        String name;
+        double price;
+        int quantity;
+        Product(String i, String n, double p, int q) { id=i; name=n; price=p; quantity=q; }
+        public String toString() { return String.format("%s | %s | %.2f | %d", id, name, price, quantity); }
+    }
+}
