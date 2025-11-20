@@ -1,0 +1,104 @@
+
+import java.io.*;
+import java.nio.file.*;
+import java.security.MessageDigest;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+
+/**
+ * Single-file ATM Interface
+ * - accounts persisted in accounts.csv: accountNumber,name,pinHash,balance
+ * - transactions appended to transactions.log
+ *
+ * Compile: javac ATMInterface.java
+ * Run:     java ATMInterface
+ *
+ * Java 11+
+ */
+public class ATMInterface {
+    private static final String ACCOUNTS_FILE = "accounts.csv";
+    private static final String TX_LOG = "transactions.log";
+    private static final Scanner SC = new Scanner(System.in);
+    private static final DateTimeFormatter DF = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    public static void main(String[] args) {
+        System.out.println("=== Simple ATM Interface ===");
+        try {
+            Files.createDirectories(Paths.get("."));
+            if (!Files.exists(Paths.get(ACCOUNTS_FILE))) {
+                Files.createFile(Paths.get(ACCOUNTS_FILE));
+            }
+            if (!Files.exists(Paths.get(TX_LOG))) {
+                Files.createFile(Paths.get(TX_LOG));
+            }
+        } catch (IOException e) {
+            System.err.println("Unable to initialize storage files: " + e.getMessage());
+            return;
+        }
+
+        while (true) {
+            System.out.println("\nMain Menu:");
+            System.out.println("1) Create account");
+            System.out.println("2) Login");
+            System.out.println("3) Exit");
+            System.out.print("Choose: ");
+            String opt = SC.nextLine().trim();
+            switch (opt) {
+                case "1" -> createAccount();
+                case "2" -> login();
+                case "3" -> { System.out.println("Goodbye."); return; }
+                default -> System.out.println("Invalid option.");
+            }
+        }
+    }
+
+    // --- Account model utility methods ---
+    private static void createAccount() {
+        try {
+            System.out.print("Full name: ");
+            String name = SC.nextLine().trim();
+            if (name.isEmpty()) { System.out.println("Name required."); return; }
+
+            String accNum = generateAccountNumber();
+            String pin;
+            while (true) {
+                System.out.print("4-digit PIN (will be hidden): ");
+                pin = SC.nextLine().trim();
+                if (pin.matches("\\d{4}")) break;
+                System.out.println("PIN must be 4 digits.");
+            }
+            String hash = sha256(pin);
+            double initBalance = 0.0;
+            System.out.print("Initial deposit (optional, press enter for 0): ");
+            String balStr = SC.nextLine().trim();
+            if (!balStr.isEmpty()) {
+                try { initBalance = Double.parseDouble(balStr); }
+                catch (NumberFormatException ex) { System.out.println("Invalid amount, using 0."); }
+            }
+            appendLine(ACCOUNTS_FILE, String.format("%s,%s,%s,%.2f", accNum, escapeCsv(name), hash, initBalance));
+            logTx(accNum, "CREATE_ACCOUNT", initBalance, "Account created");
+            System.out.println("Account created! Account Number: " + accNum);
+        } catch (Exception e) {
+            System.err.println("Error creating account: " + e.getMessage());
+        }
+    }
+
+    private static void login() {
+        System.out.print("Enter account number: ");
+        String acc = SC.nextLine().trim();
+        System.out.print("Enter 4-digit PIN: ");
+        String pin = SC.nextLine().trim();
+        try {
+            Optional<Account> oa = loadAccount(acc);
+            if (oa.isEmpty()) { System.out.println("Account not found."); return; }
+            Account account = oa.get();
+            if (!account.pinHash.equals(sha256(pin))) {
+                System.out.println("Incorrect PIN.");
+                return;
+            }
+            userMenu(account);
+        } catch (Exception e) {
+            System.err.println("Login error: " + e.getMessage());
+        }
+    }
